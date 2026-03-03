@@ -13,12 +13,12 @@ import tradeRoutes    from "./routes/tradeRoutes.js";
 import optionsRoutes  from "./routes/optionsRoutes.js";
 import positionRoutes from "./routes/positionRoutes.js";
 
-// ─── Models ───────────────────────────────────────────────────────────────────
+// ─── Models (Singleton Pattern) ───────────────────────────────────────────────
 import { DailyStatus }          from "./models/dailyStatusModel.js";
 import TrafficTradePerformance  from "./models/trafficTradePerformanceModel.js";
 import ActiveTrade              from "./models/activeTradeModel.js";
 
-// ─── Services ─────────────────────────────────────────────────────────────────
+// ─── Strategy Logic & Services ────────────────────────────────────────────────
 import { resetDailyState, tradeState } from "./state/tradeState.js";
 import { scanAndSyncOrders } from "./services/orderMonitorService.js";
 import { loadTokenFromDisk, getKiteInstance } from "./services/kiteService.js";
@@ -37,12 +37,10 @@ const getISTDateStr = () =>
     year: "numeric", month: "2-digit", day: "2-digit",
   }).format(new Date());
 
-// ─── CORS Configuration ──────────────────────────────────────────────────────
+// ─── Production CORS Configuration ───────────────────────────────────────────
 app.use(cors({
   origin: ["https://mariaalgo.online", "http://localhost:3000", "http://localhost:5173"],
-  credentials: true,
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  credentials: true
 }));
 app.use(express.json());
 
@@ -64,23 +62,29 @@ app.get("/api/condor/positions", async (req, res) => {
   try {
     const activeTrade = await ActiveTrade.findOne({ status: "ACTIVE" });
     if (!activeTrade) return res.json([]);
+    
     const idx = activeTrade.index;
-    const getLtp = (sym) => sym ? lastPrices[kiteToFyersSymbol(sym, idx)] || 0 : 0;
-    const currentCallNet = activeTrade.symbols.callSell ? Math.abs(getLtp(activeTrade.symbols.callSell) - getLtp(activeTrade.symbols.callBuy)) : 0;
-    const currentPutNet = activeTrade.symbols.putSell ? Math.abs(getLtp(activeTrade.symbols.putSell) - getLtp(activeTrade.symbols.putBuy)) : 0;
-    const totalPnL = ((activeTrade.callSpreadEntryPremium - currentCallNet) + (activeTrade.putSpreadEntryPremium - currentPutNet)) * activeTrade.quantity;
+    const getLtp = (sym) => sym ? (lastPrices[kiteToFyersSymbol(sym, idx)] || 0) : 0;
+
+    const currentCallNet = activeTrade.symbols.callSell 
+        ? Math.abs(getLtp(activeTrade.symbols.callSell) - getLtp(activeTrade.symbols.callBuy)) : 0;
+    const currentPutNet = activeTrade.symbols.putSell 
+        ? Math.abs(getLtp(activeTrade.symbols.putSell) - getLtp(activeTrade.symbols.putBuy)) : 0;
+
+    const totalPnL = ((activeTrade.callSpreadEntryPremium - currentCallNet) + 
+                      (activeTrade.putSpreadEntryPremium - currentPutNet)) * activeTrade.lotSize;
 
     res.json([{
       index: activeTrade.index,
       totalPnL: totalPnL.toFixed(2),
-      quantity: activeTrade.quantity,
+      quantity: activeTrade.lotSize,
       call: { entry: activeTrade.callSpreadEntryPremium.toFixed(2), current: currentCallNet.toFixed(2), sl: (activeTrade.callSpreadEntryPremium * 4).toFixed(2), profit70: (activeTrade.callSpreadEntryPremium * 0.3).toFixed(2) },
       put: { entry: activeTrade.putSpreadEntryPremium.toFixed(2), current: currentPutNet.toFixed(2), sl: (activeTrade.putSpreadEntryPremium * 4).toFixed(2), profit70: (activeTrade.putSpreadEntryPremium * 0.3).toFixed(2) }
     }]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 2. Traffic Light dashboard status
+// 2. Traffic Light: Dashboard Status
 app.get("/api/traffic/status", (req, res) => {
   let livePnL = 0;
   if (tradeState?.tradeActive && tradeState?.entryPrice && lastTLLTP > 0) {
@@ -102,7 +106,7 @@ app.get("/api/history", async (req, res) => {
     const trafficHistory = await TrafficTradePerformance.find().sort({ createdAt: -1 }).limit(10);
     const condorConn = getCondorDB();
     
-    // Check if model already compiled to prevent crash
+    // Check if model already compiled in the connection to prevent OverwriteModelError
     const CondorPerf = condorConn.models.CondorTradePerformance || 
       condorConn.model("CondorTradePerformance", new mongoose.Schema({}, { strict: false, collection: 'condortradeperformances' }));
 
@@ -115,7 +119,7 @@ app.get("/api/history", async (req, res) => {
   } catch (err) { res.status(500).json({ error: "History sync failed" }); }
 });
 
-// 4. Strategy Execution for Option Chain
+// 4. Strategy Execution
 app.post("/api/trades/execute-basket", async (req, res) => {
   try {
     const { symbol, legs } = req.body;
@@ -123,9 +127,9 @@ app.post("/api/trades/execute-basket", async (req, res) => {
     const results = await Promise.all(legs.map(leg => {
       return kite.placeOrder("regular", {
         exchange: symbol === "SENSEX" ? "BFO" : "NFO",
-        tradingsymbol: `${symbol}26MAR${leg.strike}${leg.optionType}`,
+        tradingsymbol: `${symbol}${process.env.CURRENT_EXPIRY || '26MAR'}${leg.strike}${leg.optionType}`,
         transaction_type: leg.type === "BUY" ? kite.TRANSACTION_TYPE_BUY : kite.TRANSACTION_TYPE_SELL,
-        quantity: leg.qty, order_type: kite.ORDER_TYPE_MARKET, product: kite.PRODUCT_MIS
+        quantity: leg.qty, order_type: "MARKET", product: "MIS"
       });
     }));
     res.json({ orderIds: results.map(r => r.order_id) });
@@ -135,10 +139,10 @@ app.post("/api/trades/execute-basket", async (req, res) => {
 // 5. General Health Check
 app.get("/status", (req, res) => res.json({ status: "Online", timestamp: new Date() }));
 
-// ─── Cron Job (9:00 AM Reset) ─────────────────────────────────────────────────
+// ─── Reset Daily State (9:00 AM IST) ─────────────────────────────────────────
 cron.schedule("0 9 * * 1-5", () => resetDailyState(), { timezone: "Asia/Kolkata" });
 
-// ─── Main Startup Logic ───────────────────────────────────────────────────────
+// ─── Main Startup ─────────────────────────────────────────────────────────────
 const start = async () => {
   try {
     await connectDatabases();
@@ -155,9 +159,7 @@ const start = async () => {
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, async () => {
       console.log(`🚀 Maria Algo Server Online · port ${PORT}`);
-      
-      await sendTelegramAlert("🤖 <b>Maria Algo Server Online!</b>\nMaster Feed & Kite API ready.");
-
+      await sendTelegramAlert("🤖 <b>Maria Algo Server Online!</b>\nAll strategy engines initialized.");
       if (process.env.FYERS_ACCESS_TOKEN) await initMasterDataFeed(io);
       setInterval(async () => { try { await scanAndSyncOrders(); } catch (err) {} }, 60000);
     });
