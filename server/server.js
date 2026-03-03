@@ -30,6 +30,13 @@ const app    = express();
 const server = http.createServer(app);
 let lastTLLTP = 0; 
 
+// ─── IST date helper ─────────────────────────────────────────────────────────
+const getISTDate = () =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+
 // ─── CORS Fix ─────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: ["https://mariaalgo.online", "http://localhost:3000", "http://localhost:5173"],
@@ -45,9 +52,9 @@ io.on("connection", (socket) => {
 });
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
-app.use("/api/auth", authRoutes);
-app.use("/api/trades", tradeRoutes);
-app.use("/api/options", optionsRoutes);
+app.use("/api/auth",      authRoutes);
+app.use("/api/trades",    tradeRoutes);
+app.use("/api/options",   optionsRoutes);
 app.use("/api/positions", positionRoutes);
 
 // 1. Dashboard: Iron Condor Live Positions
@@ -71,26 +78,7 @@ app.get("/api/condor/positions", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 2. Multi-Leg strategy execution
-app.post("/api/trades/execute-basket", async (req, res) => {
-  try {
-    const { symbol, legs } = req.body;
-    const kite = getKiteInstance();
-    const results = await Promise.all(legs.map(leg => {
-      return kite.placeOrder("regular", {
-        exchange: symbol === "SENSEX" ? "BFO" : "NFO",
-        tradingsymbol: `${symbol}26MAR${leg.strike}${leg.optionType}`,
-        transaction_type: leg.type === "BUY" ? kite.TRANSACTION_TYPE_BUY : kite.TRANSACTION_TYPE_SELL,
-        quantity: leg.qty,
-        order_type: kite.ORDER_TYPE_MARKET,
-        product: kite.PRODUCT_MIS
-      });
-    }));
-    res.json({ orderIds: results.map(r => r.order_id) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// 3. Traffic Light dashboard status
+// 2. Traffic Light Status
 app.get("/api/traffic/status", (req, res) => {
   let livePnL = 0;
   if (tradeState?.tradeActive && tradeState?.entryPrice && lastTLLTP > 0) {
@@ -106,14 +94,15 @@ app.get("/api/traffic/status", (req, res) => {
   });
 });
 
-// 4. Combined history (FIXED: defined model outside to prevent crash)
+// 3. Combined History (FIXED MODEL COMPILATION)
 let CondorPerfModel; 
 app.get("/api/history", async (req, res) => {
   try {
     const trafficHistory = await TrafficTradePerformance.find().sort({ createdAt: -1 }).limit(10);
     if (!CondorPerfModel) {
       const condorConn = getCondorDB();
-      CondorPerfModel = condorConn.model("CondorTradePerformance", new mongoose.Schema({}, { strict: false, collection: 'condortradeperformances' }));
+      CondorPerfModel = condorConn.models.CondorTradePerformance || 
+        condorConn.model("CondorTradePerformance", new mongoose.Schema({}, { strict: false, collection: 'condortradeperformances' }));
     }
     const condorHistory = await CondorPerfModel.find().sort({ createdAt: -1 }).limit(10);
     const combined = [...trafficHistory, ...condorHistory].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 10).map((h) => ({
@@ -124,17 +113,64 @@ app.get("/api/history", async (req, res) => {
   } catch (err) { res.status(500).json({ error: "History sync failed" }); }
 });
 
+// 4. Strategy Execution
+app.post("/api/trades/execute-basket", async (req, res) => {
+  try {
+    const { symbol, legs } = req.body;
+    const kite = getKiteInstance();
+    const results = await Promise.all(legs.map(leg => {
+      return kite.placeOrder("regular", {
+        exchange: symbol === "SENSEX" ? "BFO" : "NFO",
+        tradingsymbol: `${symbol}26MAR${leg.strike}${leg.optionType}`,
+        transaction_type: leg.type === "BUY" ? kite.TRANSACTION_TYPE_BUY : kite.TRANSACTION_TYPE_SELL,
+        quantity: leg.qty, order_type: "MARKET", product: "MIS"
+      });
+    }));
+    res.json({ orderIds: results.map(r => r.order_id) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── RESTORED CRON RESET (9:00 AM IST) ───────────────────────────────────────
+cron.schedule("0 9 * * 1-5", () => resetDailyState(), {
+  timezone: "Asia/Kolkata",
+});
+
+// ─── Startup ──────────────────────────────────────────────────────────────────
 const start = async () => {
   try {
     await connectDatabases();
     await loadTokenFromDisk(); 
+
+    const dateKey = getISTDate();
+    const dailyRecord = await DailyStatus.findOne({ date: dateKey });
+    if (dailyRecord) {
+      tradeState.tradeTakenToday = dailyRecord.tradeTakenToday || false;
+      tradeState.breakoutHigh   = dailyRecord.breakoutHigh;
+      tradeState.breakoutLow    = dailyRecord.breakoutLow;
+    }
+
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, async () => {
       console.log(`🚀 Maria Algo Server Online · port ${PORT}`);
+      console.log(`   🚦 Traffic Light Strategy — READY`);
+      console.log(`   🦅 Iron Condor Strategy   — READY\n`);
+
+      // RESTORED TELEGRAM NOTIFICATION
+      await sendTelegramAlert(
+        "🤖 <b>Maria Algo Server Online!</b>\n" +
+        "🚦 Traffic Light  +  🦅 Iron Condor\n" +
+        "Master Data Feed initialized."
+      );
+
       if (process.env.FYERS_ACCESS_TOKEN) await initMasterDataFeed(io);
-      setInterval(async () => { try { await scanAndSyncOrders(); } catch (err) {} }, 60000);
+      
+      // RESTORED ORDER SYNC INTERVAL
+      setInterval(async () => { 
+        try { await scanAndSyncOrders(); } 
+        catch (err) { console.error("❌ Order Sync Error:", err.message); } 
+      }, 60000);
     });
-  } catch (err) { process.exit(1); }
+  } catch (err) { console.error("Fatal Startup Error:", err); process.exit(1); }
 };
 
 start();
