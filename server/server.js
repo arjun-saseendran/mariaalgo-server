@@ -15,9 +15,12 @@ import tradeRoutes    from "./routes/tradeRoutes.js";
 import optionsRoutes  from "./routes/optionsRoutes.js";
 import positionRoutes from "./routes/positionRoutes.js";
 
-// ─── Traffic Light: State / Strategy ──────────────────────────────────────────
+// ─── Models ───────────────────────────────────────────────────────────────────
 import { DailyStatus }          from "./models/dailyStatusModel.js";
 import TrafficTradePerformance  from "./models/trafficTradePerformanceModel.js";
+import ActiveTrade              from "./models/activeTradeModel.js"; // Added for positions endpoint
+
+// ─── State / Strategy ─────────────────────────────────────────────────────────
 import { resetDailyState, tradeState } from "./state/tradeState.js";
 
 // ─── Shared & Iron Condor Services ────────────────────────────────────────────
@@ -70,6 +73,34 @@ app.use("/api/trades",    tradeRoutes);
 app.use("/api/options",   optionsRoutes);
 app.use("/api/positions", positionRoutes);
 
+// ─── Dashboard: Iron Condor Live Positions ───────────────────────────────────
+app.get("/api/condor/positions", async (req, res) => {
+  try {
+    const activeTrade = await ActiveTrade.findOne({ status: "ACTIVE" });
+    if (!activeTrade) return res.json([]);
+
+    // Format data specifically for Dashboard.jsx "Iron Condor Live Legs" table
+    const uiResponse = [{
+      index: activeTrade.index,
+      totalPnL: "0.00", // PnL is usually calculated via Socket ticks on frontend
+      quantity: activeTrade.quantity,
+      call: {
+        entry: activeTrade.callSpreadEntryPremium.toFixed(2),
+        sl: (activeTrade.callSpreadEntryPremium * 4).toFixed(2),
+        profit70: (activeTrade.callSpreadEntryPremium * 0.3).toFixed(2),
+      },
+      put: {
+        entry: activeTrade.putSpreadEntryPremium.toFixed(2),
+        sl: (activeTrade.putSpreadEntryPremium * 4).toFixed(2),
+        profit70: (activeTrade.putSpreadEntryPremium * 0.3).toFixed(2),
+      }
+    }];
+    res.json(uiResponse);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch live positions" });
+  }
+});
+
 // ─── Traffic Light: dashboard status ─────────────────────────────────────────
 app.get("/api/traffic/status", (req, res) => {
   try {
@@ -101,7 +132,7 @@ app.get("/api/traffic/status", (req, res) => {
   }
 });
 
-// ─── Iron Condor: health check ────────────────────────────────────────────────
+// ─── General Status: health check ───────────────────────────────────────────
 app.get("/status", (req, res) =>
   res.json({ status: "Online", timestamp: new Date() })
 );
@@ -113,8 +144,6 @@ app.get("/api/history", async (req, res) => {
       .sort({ createdAt: -1 }).limit(10);
 
     const condorConn = getCondorDB();
-    
-    // 🚨 FIXED BUG: Now strictly pointing to CondorTradePerformance
     const CondorPerf = condorConn.model(
       "CondorTradePerformance",
       new mongoose.Schema({}, { strict: false, collection: 'condortradeperformances' })
@@ -127,9 +156,9 @@ app.get("/api/history", async (req, res) => {
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, 10)
       .map((h) => ({
-        symbol:   h.index || h.symbol, // Handle both DB structures
+        symbol:   h.index || h.symbol, 
         exitReason: h.exitReason,
-        pnl:      h.realizedPnL || h.pnl, // Handle both DB structures
+        pnl:      h.realizedPnL || h.pnl, 
         strategy: h.notes?.includes("Iron Condor") || h.callSpreadEntryPremium ? "IRON_CONDOR" : "TRAFFIC_LIGHT",
       }));
 
@@ -149,7 +178,9 @@ cron.schedule("0 9 * * 1-5", () => resetDailyState(), {
 const start = async () => {
   try {
     await connectDatabases();
-    await loadTokenFromDisk();
+    
+    // UPDATED: Await validation of the Kite Session before proceeding
+    await loadTokenFromDisk(); 
 
     const dateKey = getISTDate();
     const dailyRecord = await DailyStatus.findOne({ date: dateKey });
@@ -173,9 +204,7 @@ const start = async () => {
 
       if (process.env.FYERS_ACCESS_TOKEN) {
         console.log("📡 Fyers token found — starting Master Data Feed...");
-        
         await initMasterDataFeed(io);
-        
       } else {
         console.warn(
           "⚠️  FYERS_ACCESS_TOKEN not set.\n" +
