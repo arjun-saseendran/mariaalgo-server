@@ -7,5 +7,6 @@ const tradePerformanceSchema = new mongoose.Schema({
   notes: { type: String }
 }, { timestamps: true });
 
-const TradePerformance = mongoose.model('TradePerformance', tradePerformanceSchema);
+// FIX: Change to this
+const TradePerformance = mongoose.models.TradePerformance || mongoose.model('TradePerformance', tradePerformanceSchema);
 export default TradePerformance;

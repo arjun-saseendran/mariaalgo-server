@@ -13,12 +13,13 @@ import tradeRoutes    from "./routes/tradeRoutes.js";
 import optionsRoutes  from "./routes/optionsRoutes.js";
 import positionRoutes from "./routes/positionRoutes.js";
 
-// ─── Models (Singleton Pattern) ───────────────────────────────────────────────
-import { DailyStatus }          from "./models/dailyStatusModel.js";
-import TrafficTradePerformance  from "./models/trafficTradePerformanceModel.js";
+// ─── SAFE MODEL LOADING ───────────────────────────────────────────────────────
+// We import them, but we must ensure the files themselves use Singleton exports
 import ActiveTrade              from "./models/activeTradeModel.js";
+import TradePerformance         from "./models/trafficTradePerformanceModel.js";
+import { DailyStatus }          from "./models/dailyStatusModel.js";
 
-// ─── Strategy Logic & Services ────────────────────────────────────────────────
+// ─── Services & Strategy ──────────────────────────────────────────────────────
 import { resetDailyState, tradeState } from "./state/tradeState.js";
 import { scanAndSyncOrders } from "./services/orderMonitorService.js";
 import { loadTokenFromDisk, getKiteInstance } from "./services/kiteService.js";
@@ -30,17 +31,12 @@ const app    = express();
 const server = http.createServer(app);
 let lastTLLTP = 0; 
 
-// ─── IST date helper ─────────────────────────────────────────────────────────
-const getISTDateStr = () =>
-  new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date());
-
-// ─── Production CORS Configuration ───────────────────────────────────────────
+// ─── PRODUCTION CORS ──────────────────────────────────────────────────────────
 app.use(cors({
   origin: ["https://mariaalgo.online", "http://localhost:3000", "http://localhost:5173"],
-  credentials: true
+  credentials: true,
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.use(express.json());
 
@@ -51,7 +47,7 @@ io.on("connection", (socket) => {
   socket.on("market_tick", (data) => { if (data?.price) lastTLLTP = data.price; });
 });
 
-// ─── API Routes ───────────────────────────────────────────────────────────────
+// ─── API ROUTES ───────────────────────────────────────────────────────────────
 app.use("/api/auth",      authRoutes);
 app.use("/api/trades",    tradeRoutes);
 app.use("/api/options",   optionsRoutes);
@@ -84,7 +80,7 @@ app.get("/api/condor/positions", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 2. Traffic Light: Dashboard Status
+// 2. Traffic Light: Status
 app.get("/api/traffic/status", (req, res) => {
   let livePnL = 0;
   if (tradeState?.tradeActive && tradeState?.entryPrice && lastTLLTP > 0) {
@@ -100,13 +96,13 @@ app.get("/api/traffic/status", (req, res) => {
   });
 });
 
-// 3. Combined history (FIXED: Safe model definition)
+// 3. Combined History (SAFE)
 app.get("/api/history", async (req, res) => {
   try {
-    const trafficHistory = await TrafficTradePerformance.find().sort({ createdAt: -1 }).limit(10);
+    const trafficHistory = await TradePerformance.find().sort({ createdAt: -1 }).limit(10);
     const condorConn = getCondorDB();
     
-    // Check if model already compiled in the connection to prevent OverwriteModelError
+    // Safety check for dynamic connection model
     const CondorPerf = condorConn.models.CondorTradePerformance || 
       condorConn.model("CondorTradePerformance", new mongoose.Schema({}, { strict: false, collection: 'condortradeperformances' }));
 
@@ -119,37 +115,16 @@ app.get("/api/history", async (req, res) => {
   } catch (err) { res.status(500).json({ error: "History sync failed" }); }
 });
 
-// 4. Strategy Execution
-app.post("/api/trades/execute-basket", async (req, res) => {
-  try {
-    const { symbol, legs } = req.body;
-    const kite = getKiteInstance();
-    const results = await Promise.all(legs.map(leg => {
-      return kite.placeOrder("regular", {
-        exchange: symbol === "SENSEX" ? "BFO" : "NFO",
-        tradingsymbol: `${symbol}${process.env.CURRENT_EXPIRY || '26MAR'}${leg.strike}${leg.optionType}`,
-        transaction_type: leg.type === "BUY" ? kite.TRANSACTION_TYPE_BUY : kite.TRANSACTION_TYPE_SELL,
-        quantity: leg.qty, order_type: "MARKET", product: "MIS"
-      });
-    }));
-    res.json({ orderIds: results.map(r => r.order_id) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// 5. General Health Check
 app.get("/status", (req, res) => res.json({ status: "Online", timestamp: new Date() }));
 
-// ─── Reset Daily State (9:00 AM IST) ─────────────────────────────────────────
-cron.schedule("0 9 * * 1-5", () => resetDailyState(), { timezone: "Asia/Kolkata" });
-
-// ─── Main Startup ─────────────────────────────────────────────────────────────
+// ─── STARTUP ──────────────────────────────────────────────────────────────────
 const start = async () => {
   try {
     await connectDatabases();
     await loadTokenFromDisk(); 
 
-    const dateKey = getISTDateStr();
-    const dailyRecord = await DailyStatus.findOne({ date: dateKey });
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+    const dailyRecord = await DailyStatus.findOne({ date: today });
     if (dailyRecord) {
       tradeState.tradeTakenToday = dailyRecord.tradeTakenToday || false;
       tradeState.breakoutHigh = dailyRecord.breakoutHigh;
@@ -159,11 +134,12 @@ const start = async () => {
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, async () => {
       console.log(`🚀 Maria Algo Server Online · port ${PORT}`);
-      await sendTelegramAlert("🤖 <b>Maria Algo Server Online!</b>\nAll strategy engines initialized.");
+      await sendTelegramAlert("🤖 <b>Maria Algo Online</b>");
       if (process.env.FYERS_ACCESS_TOKEN) await initMasterDataFeed(io);
       setInterval(async () => { try { await scanAndSyncOrders(); } catch (err) {} }, 60000);
     });
-  } catch (err) { console.error("❌ Fatal Startup Error:", err); process.exit(1); }
+  } catch (err) { console.error("Fatal:", err); process.exit(1); }
 };
 
+cron.schedule("0 9 * * 1-5", () => resetDailyState(), { timezone: "Asia/Kolkata" });
 start();
