@@ -1,4 +1,5 @@
-import { UpstoxClient } from 'upstox-js-sdk';
+import pkg from 'upstox-js-sdk';
+const { ApiClient, MarketQuoteApi, OrderApi, PortfolioApi, OptionsApi } = pkg;
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
@@ -8,7 +9,7 @@ dotenv.config();
 // =============================
 // 🔐 INIT UPSTOX
 // =============================
-const defaultClient = UpstoxClient.ApiClient.instance;
+const defaultClient = ApiClient.instance;
 const oauth2 = defaultClient.authentications['OAUTH2'];
 
 let _accessToken = null;
@@ -51,9 +52,9 @@ export const setUpstoxAccessToken = (token) => {
 // =============================
 // 🏭 GET API INSTANCES
 // =============================
-export const getUpstoxMarketApi   = () => new UpstoxClient.MarketQuoteApi();
-export const getUpstoxOrderApi    = () => new UpstoxClient.OrderApi();
-export const getUpstoxPortfolioApi = () => new UpstoxClient.PortfolioApi();
+export const getUpstoxMarketApi    = () => new MarketQuoteApi();
+export const getUpstoxOrderApi     = () => new OrderApi();
+export const getUpstoxPortfolioApi = () => new PortfolioApi();
 
 // =============================
 // 📈 GET QUOTES
@@ -106,7 +107,7 @@ export const getLTP = async (instrumentKeys) => {
 // =============================
 export const getOptionChain = async (instrumentKey, expiryDate) => {
   try {
-    const api = new UpstoxClient.OptionsApi();
+    const api = new OptionsApi();
     // expiryDate format: "2026-03-06"
     const response = await api.getOptionContracts(instrumentKey, expiryDate);
     if (response && response.status === "success") {

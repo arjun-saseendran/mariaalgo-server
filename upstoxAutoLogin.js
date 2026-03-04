@@ -126,16 +126,51 @@ export const performUpstoxAutoLogin = async () => {
         console.log("🌐 Navigating to Upstox login...");
         await page.goto(loginUrl, { waitUntil: "networkidle2", timeout: 30000 });
 
-        // ── Step 2: Enter mobile number ──────────────────────────────────────
-        await page.waitForSelector("input#mobileNum", { visible: true, timeout: 10000 });
-        await typeIntoInput(page, "input#mobileNum", UPSTOX_MOBILE);
+        // ── Step 2: Detect login page structure and enter mobile ────────────
+        // Wait longer for JS-rendered page
+        await sleep(5000);
+
+        // Dump full HTML for debugging
+        const fullHtml = await page.evaluate(() => document.body.innerHTML.slice(0, 3000));
+        console.log("📄 Page HTML (first 3000 chars):\n", fullHtml);
+
+        const pageInputs = await page.evaluate(() => {
+            return Array.from(document.querySelectorAll("input")).map(el => ({
+                id: el.id, name: el.name, type: el.type,
+                placeholder: el.placeholder, className: el.className.slice(0,50)
+            }));
+        });
+        console.log("📋 Inputs found on page:", JSON.stringify(pageInputs, null, 2));
+
+        const mobileSelector = await page.evaluate(() => {
+            for (const sel of [
+                "input#mobileNum", "input#mobile", "input[name='mobile']",
+                "input[type='tel']", "input[placeholder*='mobile' i]",
+                "input[placeholder*='phone' i]", "input[placeholder*='number' i]",
+                "input[type='number']", "input[type='text']"
+            ]) {
+                if (document.querySelector(sel)) return sel;
+            }
+            return null;
+        });
+        if (!mobileSelector) throw new Error("Mobile input not found. Check page HTML above.");
+        console.log(`📱 Using mobile selector: ${mobileSelector}`);
+
+        await typeIntoInput(page, mobileSelector, UPSTOX_MOBILE);
+
+        // Find and click the OTP/continue button
         await page.evaluate(() => {
-            const btn = document.querySelector("button#getOtp") ||
-                Array.from(document.querySelectorAll("button"))
-                    .find(b => b.innerText?.toLowerCase().includes("get otp"));
+            const btn =
+                document.querySelector("button#getOtp") ||
+                document.querySelector("button[type='submit']") ||
+                Array.from(document.querySelectorAll("button")).find(
+                    b => b.innerText?.toLowerCase().includes("get otp") ||
+                         b.innerText?.toLowerCase().includes("continue") ||
+                         b.innerText?.toLowerCase().includes("send otp")
+                );
             btn?.click();
         });
-        console.log("📱 Mobile number submitted. Waiting for OTP screen...");
+        console.log("📱 Mobile submitted. Waiting for OTP screen...");
         await sleep(3000);
 
         // ── Step 3: Enter TOTP ────────────────────────────────────────────────
