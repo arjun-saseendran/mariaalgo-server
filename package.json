@@ -21,7 +21,8 @@
     "mongoose": "^9.2.2",
     "node-cron": "^4.2.1",
     "puppeteer": "^24.37.5",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "upstox-js-sdk": "^2.21.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

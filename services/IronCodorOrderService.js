@@ -1,110 +1,143 @@
-import { getKiteInstance } from '../config/kiteConfig.js'; // 🚨 Updated to your new config path
+import { getKiteInstance } from '../config/kiteConfig.js';
+import { sendCondorAlert } from '../services/telegramService.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 /**
  * 🛡️ UNIVERSAL MARGIN-SAFE EXIT
- * Automatically detects legs and executes exit in a sequence that prevents margin spikes.
- * Now integrated with LIVE_TRADING safety toggle.
+ * Exits shorts first (reduces margin), then longs.
+ * Integrated with LIVE_TRADING safety toggle.
  */
 export const executeMarketExit = async (trade) => {
     const kc = getKiteInstance();
     const exchange = trade.index === 'SENSEX' ? 'BFO' : 'NFO';
-    
-    console.log(`🚨 [EXECUTION] ${process.env.LIVE_TRADING === "true" ? 'LIVE' : 'PAPER'} Exit Triggered for ${trade.index}`);
+    const isLive = process.env.LIVE_TRADING === 'true';
+
+    console.log(`🚨 [EXECUTION] ${isLive ? 'LIVE' : 'PAPER'} Exit Triggered for ${trade.index}`);
 
     try {
         const shortLegs = [
-            { symbol: trade.symbols.callSell, type: "BUY" },
-            { symbol: trade.symbols.putSell, type: "BUY" }
+            { symbol: trade.symbols.callSell },
+            { symbol: trade.symbols.putSell  }
         ].filter(leg => leg.symbol);
 
         const longLegs = [
-            { symbol: trade.symbols.callBuy, type: "SELL" },
-            { symbol: trade.symbols.putBuy, type: "SELL" }
+            { symbol: trade.symbols.callBuy },
+            { symbol: trade.symbols.putBuy  }
         ].filter(leg => leg.symbol);
 
-        // --- EXECUTION PHASE 1: EXIT SHORTS ---
+        // --- PHASE 1: EXIT SHORTS (buy to cover) ---
         for (const leg of shortLegs) {
-            if (process.env.LIVE_TRADING !== "true") {
-                console.log(`📝 [PAPER-KITE] BUY (Cover) ${trade.lotSize} ${leg.symbol}`);
+            if (!isLive) {
+                console.log(`📝 [PAPER] BUY (Cover) ${trade.lotSize} ${leg.symbol}`);
             } else {
-                console.log(`⏳ [LIVE] Closing Short Leg (Buying to cover): ${leg.symbol}...`);
-                await kc.placeOrder("regular", {
-                    exchange: exchange,
-                    tradingsymbol: leg.symbol,
-                    transaction_type: "BUY",
-                    quantity: trade.lotSize,
-                    order_type: "MARKET",
-                    product: "NRML"
+                console.log(`⏳ Closing short: ${leg.symbol}...`);
+                await kc.placeOrder('regular', {
+                    exchange,
+                    tradingsymbol:    leg.symbol,
+                    transaction_type: 'BUY',
+                    quantity:         trade.lotSize,
+                    order_type:       'MARKET',
+                    product:          'NRML'
                 });
-                console.log(`✅ Short leg ${leg.symbol} closed.`);
+                console.log(`✅ Short closed: ${leg.symbol}`);
             }
         }
 
-        // --- EXECUTION PHASE 2: EXIT LONGS ---
+        // --- PHASE 2: EXIT LONGS (sell to close) ---
         for (const leg of longLegs) {
-            if (process.env.LIVE_TRADING !== "true") {
-                console.log(`📝 [PAPER-KITE] SELL (Close) ${trade.lotSize} ${leg.symbol}`);
+            if (!isLive) {
+                console.log(`📝 [PAPER] SELL (Close) ${trade.lotSize} ${leg.symbol}`);
             } else {
-                console.log(`⏳ Closing Long Leg (Selling to close): ${leg.symbol}...`);
-                await kc.placeOrder("regular", {
-                    exchange: exchange,
-                    tradingsymbol: leg.symbol,
-                    transaction_type: "SELL",
-                    quantity: trade.lotSize,
-                    order_type: "MARKET",
-                    product: "NRML"
+                console.log(`⏳ Closing long: ${leg.symbol}...`);
+                await kc.placeOrder('regular', {
+                    exchange,
+                    tradingsymbol:    leg.symbol,
+                    transaction_type: 'SELL',
+                    quantity:         trade.lotSize,
+                    order_type:       'MARKET',
+                    product:          'NRML'
                 });
-                console.log(`✅ Long leg ${leg.symbol} closed.`);
+                console.log(`✅ Long closed: ${leg.symbol}`);
             }
         }
 
-        return { status: "SUCCESS" };
+        await sendCondorAlert(
+            `✅ <b>Exit Complete: ${trade.index}</b>\n` +
+            `Mode: ${isLive ? 'LIVE' : 'PAPER'}\n` +
+            `Legs closed: ${shortLegs.length + longLegs.length}`
+        );
+
+        return { status: 'SUCCESS' };
+
     } catch (error) {
         console.error('❌ CRITICAL ORDER FAILURE:', error.message);
+        await sendCondorAlert(
+            `🚨 <b>EXIT FAILURE: ${trade.index}</b>\n` +
+            `Error: ${error.message}\n` +
+            `⚠️ Manual intervention required!`
+        );
         throw error;
     }
 };
 
 /**
  * 🚀 MARGIN-SAFE ENTRY / ROLL
- * Use this for one-click adjustments or new entries.
+ * Buy long first (no margin risk), then sell short.
+ * Used for one-click roll adjustments.
  */
 export const executeMarginSafeEntry = async (buySymbol, sellSymbol, quantity, index) => {
     const kc = getKiteInstance();
     const exchange = index === 'SENSEX' ? 'BFO' : 'NFO';
+    const isLive = process.env.LIVE_TRADING === 'true';
 
     try {
-        if (process.env.LIVE_TRADING !== "true") {
-            console.log(`📝 [PAPER-KITE] ENTRY: BUY ${quantity} ${buySymbol} | THEN SELL ${quantity} ${sellSymbol}`);
+        if (!isLive) {
+            console.log(`📝 [PAPER] ENTRY: BUY ${quantity} ${buySymbol} | SELL ${quantity} ${sellSymbol}`);
             return { success: true };
         }
 
-        // LIVE: Buy Long First
-        await kc.placeOrder("regular", {
+        // Buy long first — no margin spike
+        console.log(`⏳ Buying long leg: ${buySymbol}...`);
+        await kc.placeOrder('regular', {
             exchange,
-            tradingsymbol: buySymbol,
-            transaction_type: "BUY",
-            quantity: quantity,
-            order_type: "MARKET",
-            product: "NRML"
+            tradingsymbol:    buySymbol,
+            transaction_type: 'BUY',
+            quantity,
+            order_type:       'MARKET',
+            product:          'NRML'
         });
+        console.log(`✅ Long leg placed: ${buySymbol}`);
 
-        // LIVE: Sell Short Second
-        await kc.placeOrder("regular", {
+        // Then sell short
+        console.log(`⏳ Selling short leg: ${sellSymbol}...`);
+        await kc.placeOrder('regular', {
             exchange,
-            tradingsymbol: sellSymbol,
-            transaction_type: "SELL",
-            quantity: quantity,
-            order_type: "MARKET",
-            product: "NRML"
+            tradingsymbol:    sellSymbol,
+            transaction_type: 'SELL',
+            quantity,
+            order_type:       'MARKET',
+            product:          'NRML'
         });
+        console.log(`✅ Short leg placed: ${sellSymbol}`);
+
+        await sendCondorAlert(
+            `🚀 <b>Entry Complete: ${index}</b>\n` +
+            `Buy: ${buySymbol}\n` +
+            `Sell: ${sellSymbol}\n` +
+            `Qty: ${quantity}`
+        );
 
         return { success: true };
+
     } catch (error) {
-        console.error("❌ Margin Safe Entry Failed:", error.message);
+        console.error('❌ Margin Safe Entry Failed:', error.message);
+        await sendCondorAlert(
+            `🚨 <b>ENTRY FAILURE: ${index}</b>\n` +
+            `Error: ${error.message}\n` +
+            `⚠️ Check positions immediately!`
+        );
         throw error;
     }
 };
