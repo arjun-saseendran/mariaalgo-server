@@ -7,7 +7,7 @@ import { handleNewCandle, handleTick } from "../Engines/traficLightEngine.js"; /
 import { updateCondorPrice, monitorCondorLevels } from "../Engines/ironCondorEngine.js"; // Iron Condor
 
 import ActiveTrade from "../models/ironCondorActiveTradeModel.js";
-import { kiteToFyersSymbol, getFyersIndexSymbol } from "../services/symbolMapper.js";
+import { kiteToFyersSymbol, getFyersIndexSymbol } from "../services/fyersSymbolMapper.js";
 
 // --- BASE SYMBOLS ---
 const NIFTY_SPOT = "NSE:NIFTY50-INDEX";

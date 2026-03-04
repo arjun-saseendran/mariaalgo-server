@@ -4,7 +4,7 @@ import { scanAndSyncOrders, condorPrices } from '../Engines/ironCondorEngine.js'
 import ActiveTrade from '../models/ironCondorActiveTradeModel.js';
 import { getKiteInstance } from '../config/kiteConfig.js'; 
 import { sendTelegramAlert } from '../services/telegramService.js';
-import { kiteToFyersSymbol } from '../services/symbolMapper.js'; 
+import { kiteToFyersSymbol } from '../services/fyersSymbolMapper.js'; 
 
 const router = express.Router();
 

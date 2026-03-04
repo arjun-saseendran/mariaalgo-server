@@ -1,6 +1,6 @@
 import express from 'express';
 import { getQuotes } from '../config/fyersConfig.js';
-import { getFyersIndexSymbol, buildFyersOptionSymbol, getNextWeeklyExpiry } from '../services/symbolMapper.js';
+import { getFyersIndexSymbol, buildFyersOptionSymbol, getNextWeeklyExpiry } from '../services/fyersSymbolMapper.js';
 
 const router = express.Router();
 

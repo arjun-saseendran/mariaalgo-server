@@ -25,7 +25,7 @@ import { loadTokenFromDisk }                from "./config/kiteConfig.js";
 import { setUpstoxAccessToken }             from "./config/upstoxConfig.js";
 import { sendTelegramAlert }                from "./services/telegramService.js";
 import { initFyersLiveData }                from "./services/fyersLiveData.js";
-import { kiteToFyersSymbol }                from "./services/symbolMapper.js";
+import { kiteToFyersSymbol }                from "./services/fyersSymbolMapper.js";
 
 const app    = express();
 const server = http.createServer(app);
