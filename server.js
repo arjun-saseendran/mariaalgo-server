@@ -13,30 +13,25 @@ import tradeRoutes    from "./routes/ironCondorTradeRoutes.js";
 import optionsRoutes  from "./routes/optionChainRoutes.js";
 import positionRoutes from "./routes/ironCondorPositionRoutes.js";
 
-// ─── SAFE MODEL LOADING ───────────────────────────────────────────────────────
-import ActiveTrade              from "./models/ironCondorActiveTradeModel.js";
-import TradePerformance         from "./models/trafficTradePerformanceModel.js";
-import { DailyStatus }          from "./models/traficLightDailyStatusModel.js";
+// ─── Models ───────────────────────────────────────────────────────────────────
+import ActiveTrade      from "./models/ironCondorActiveTradeModel.js";
+import TradePerformance from "./models/trafficTradePerformanceModel.js";
+import { DailyStatus }  from "./models/traficLightDailyStatusModel.js";
 
 // ─── Services & Strategy ──────────────────────────────────────────────────────
 import { resetDailyState, tradeState }      from "./state/traficLightTradeState.js";
 import { scanAndSyncOrders, condorPrices }  from "./Engines/ironCondorEngine.js";
-import { loadTokenFromDisk, getKiteInstance } from "./config/kiteConfig.js";
+import { loadTokenFromDisk }                from "./config/kiteConfig.js";
 import { setUpstoxAccessToken }             from "./config/upstoxConfig.js";
 import { sendTelegramAlert }                from "./services/telegramService.js";
-import { initFyersLiveData }               from "./services/fyersLiveData.js";
-import { kiteToFyersSymbol }               from "./services/symbolMapper.js";
-
-// ─── Auto-Login Scripts ───────────────────────────────────────────────────────
-import { performZerodhaAutoLogin }  from "./kiteAutoLogin.js";
-import { generateFyersToken }       from "./fyersAutoLogin.js";
-import { performUpstoxAutoLogin }   from "./upstoxAutoLogin.js";
+import { initFyersLiveData }                from "./services/fyersLiveData.js";
+import { kiteToFyersSymbol }                from "./services/symbolMapper.js";
 
 const app    = express();
 const server = http.createServer(app);
 let lastTLLTP = 0;
 
-// ─── PRODUCTION CORS ──────────────────────────────────────────────────────────
+// ─── CORS ─────────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: ["https://mariaalgo.online", "http://localhost:3000", "http://localhost:5173"],
   credentials: true,
@@ -58,7 +53,7 @@ app.use("/api/trades",    tradeRoutes);
 app.use("/api/options",   optionsRoutes);
 app.use("/api/positions", positionRoutes);
 
-// 1. Dashboard: Iron Condor Live Positions
+// 1. Iron Condor Live Positions
 app.get("/api/condor/positions", async (req, res) => {
   try {
     const activeTrade = await ActiveTrade.findOne({ status: "ACTIVE" });
@@ -95,7 +90,7 @@ app.get("/api/condor/positions", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 2. Traffic Light: Status
+// 2. Traffic Light Status
 app.get("/api/traffic/status", (req, res) => {
   let livePnL = 0;
   if (tradeState?.tradeActive && tradeState?.entryPrice && lastTLLTP > 0) {
@@ -113,7 +108,7 @@ app.get("/api/traffic/status", (req, res) => {
   });
 });
 
-// 3. Combined History
+// 3. Combined Trade History
 app.get("/api/history", async (req, res) => {
   try {
     const trafficHistory = await TradePerformance.find().sort({ createdAt: -1 }).limit(10);
@@ -139,51 +134,19 @@ app.get("/api/history", async (req, res) => {
 
 app.get("/status", (req, res) => res.json({ status: "Online", timestamp: new Date() }));
 
-// ─── AUTO LOGIN RUNNER ────────────────────────────────────────────────────────
-const runAllAutoLogins = async () => {
-  console.log("🔐 Running all auto-logins...");
-
-  // Fyers
-  try {
-    await generateFyersToken();
-    console.log("✅ Fyers auto-login done.");
-    if (process.env.FYERS_ACCESS_TOKEN) await initFyersLiveData(io);
-  } catch (err) {
-    console.error("❌ Fyers auto-login failed:", err.message);
-    await sendTelegramAlert(`❌ <b>Fyers Auto-Login Failed</b>\n${err.message}`);
-  }
-
-  // Kite
-  try {
-    await performZerodhaAutoLogin();
-    console.log("✅ Kite auto-login done.");
-  } catch (err) {
-    console.error("❌ Kite auto-login failed:", err.message);
-    await sendTelegramAlert(`❌ <b>Kite Auto-Login Failed</b>\n${err.message}`);
-  }
-
-  // Upstox
-  try {
-    await performUpstoxAutoLogin();
-    console.log("✅ Upstox auto-login done.");
-  } catch (err) {
-    console.error("❌ Upstox auto-login failed:", err.message);
-    await sendTelegramAlert(`❌ <b>Upstox Auto-Login Failed</b>\n${err.message}`);
-  }
-};
-
 // ─── STARTUP ──────────────────────────────────────────────────────────────────
 const start = async () => {
   try {
     await connectDatabases();
-    await loadTokenFromDisk();
 
-    // Load Upstox token from .env on startup
+    // Load broker tokens saved by login.sh at 8:00 AM
+    await loadTokenFromDisk();
     if (process.env.UPSTOX_ACCESS_TOKEN) {
       setUpstoxAccessToken(process.env.UPSTOX_ACCESS_TOKEN);
-      console.log("✅ Upstox token loaded from .env");
+      console.log("✅ Upstox token loaded");
     }
 
+    // Restore Traffic Light daily state
     const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
     const dailyRecord = await DailyStatus.findOne({ date: today });
     if (dailyRecord) {
@@ -196,10 +159,7 @@ const start = async () => {
     server.listen(PORT, async () => {
       console.log(`🚀 Maria Algo Server Online · port ${PORT}`);
       await sendTelegramAlert("🤖 <b>Maria Algo Online</b>");
-
       if (process.env.FYERS_ACCESS_TOKEN) await initFyersLiveData(io);
-
-      // Iron Condor position sync every 60s
       setInterval(async () => { try { await scanAndSyncOrders(); } catch (err) {} }, 60000);
     });
 
@@ -209,11 +169,8 @@ const start = async () => {
   }
 };
 
-// ─── CRON JOBS ────────────────────────────────────────────────────────────────
+// ─── CRON ─────────────────────────────────────────────────────────────────────
 // Reset Traffic Light state at 9:00 AM IST on weekdays
 cron.schedule("0 9 * * 1-5", () => resetDailyState(), { timezone: "Asia/Kolkata" });
-
-// Auto-login all brokers at 8:45 AM IST on weekdays (before market open)
-cron.schedule("45 8 * * 1-5", runAllAutoLogins, { timezone: "Asia/Kolkata" });
 
 start();
