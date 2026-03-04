@@ -6,6 +6,7 @@ const router = express.Router();
 
 router.get('/chain', async (req, res) => {
   const symbol = req.query.symbol || 'NIFTY';
+  const strikeRange = parseInt(req.query.strikes || '20'); // default 20 strikes each side
 
   try {
     // 1️⃣ Get expiry info for response metadata
@@ -26,9 +27,9 @@ router.get('/chain', async (req, res) => {
     const step = (symbol === 'SENSEX' || symbol === 'BANKEX') ? 100 : 50;
     const atmStrike = Math.round(spotPrice / step) * step;
 
-    // 4️⃣ Generate Strikes (-10 to +10 from ATM)
+    // 4️⃣ Generate Strikes (configurable range from ATM)
     const strikes = [];
-    for (let i = -10; i <= 10; i++) {
+    for (let i = -strikeRange; i <= strikeRange; i++) {
       strikes.push(atmStrike + i * step);
     }
 
