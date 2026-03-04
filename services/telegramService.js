@@ -1,12 +1,17 @@
 import axios from 'axios';
 
 /**
- * Sends a formatted HTML message to your Telegram bot.
- * Ensure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are in your .env file.
+ * Sends a formatted HTML message to Telegram.
+ * 
+ * Each strategy has its own chat ID in .env:
+ *   TELEGRAM_BOT_TOKEN       — single bot used for all alerts
+ *   TRAFFIC_TELEGRAM_CHAT_ID — Traffic Light strategy channel
+ *   CONDOR_TELEGRAM_CHAT_ID  — Iron Condor strategy channel
+ * 
+ * Falls back to TELEGRAM_CHAT_ID if strategy-specific ID is missing.
  */
-export const sendTelegramAlert = async (message) => {
+const sendAlert = async (message, chatId) => {
     const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_CHAT_ID;
 
     if (!token || !chatId) {
         console.error("⚠️ Telegram Alert Failed: Missing BOT_TOKEN or CHAT_ID in .env");
@@ -14,21 +19,47 @@ export const sendTelegramAlert = async (message) => {
     }
 
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    
+
     try {
         await axios.post(url, {
             chat_id: chatId,
             text: message,
-            parse_mode: 'HTML', // Allows bold <b> and 🚀 emojis
+            parse_mode: 'HTML',
             disable_web_page_preview: true
         });
         console.log("📤 Telegram notification sent.");
     } catch (error) {
-        // Detailed error logging to help you troubleshoot connection issues
         if (error.response) {
             console.error(`❌ Telegram API Error: ${error.response.data.description}`);
         } else {
             console.error(`❌ Telegram Network Error: ${error.message}`);
         }
     }
+};
+
+/**
+ * 🚦 Traffic Light Strategy alerts
+ * Uses TRAFFIC_TELEGRAM_CHAT_ID → falls back to TELEGRAM_CHAT_ID
+ */
+export const sendTrafficAlert = async (message) => {
+    const chatId = process.env.TRAFFIC_TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+    await sendAlert(message, chatId);
+};
+
+/**
+ * 🦅 Iron Condor Strategy alerts
+ * Uses CONDOR_TELEGRAM_CHAT_ID → falls back to TELEGRAM_CHAT_ID
+ */
+export const sendCondorAlert = async (message) => {
+    const chatId = process.env.CONDOR_TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+    await sendAlert(message, chatId);
+};
+
+/**
+ * Generic alert — uses TELEGRAM_CHAT_ID (for server startup etc.)
+ * Kept for backward compatibility with any existing calls.
+ */
+export const sendTelegramAlert = async (message) => {
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    await sendAlert(message, chatId);
 };
