@@ -1,5 +1,5 @@
 import { fyersModel } from "fyers-api-v3";
-import "dotenv/config"; // Cleaner way to load .env
+import "dotenv/config";
 
 // =============================
 // 🔐 INIT FYERS
@@ -7,10 +7,8 @@ import "dotenv/config"; // Cleaner way to load .env
 const fyers = new fyersModel();
 
 fyers.setAppId(process.env.FYERS_APP_ID);
-// Using FYERS_REDIRECT_URI based on your previous logs
 fyers.setRedirectUrl(process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL);
 
-// Load on startup if available, but don't crash if it's waiting for auto-login
 if (process.env.FYERS_ACCESS_TOKEN) {
   fyers.setAccessToken(process.env.FYERS_ACCESS_TOKEN);
   console.log("✅ Fyers Access Token Loaded");
@@ -18,7 +16,9 @@ if (process.env.FYERS_ACCESS_TOKEN) {
   console.warn("⚠️ FYERS_ACCESS_TOKEN missing in .env. Waiting for manual/auto login.");
 }
 
-// Global setter used by your auto-login script
+// =============================
+// 🔑 DYNAMIC TOKEN SETTER
+// =============================
 export const setFyersAccessToken = (token) => {
   fyers.setAccessToken(token);
   process.env.FYERS_ACCESS_TOKEN = token;
@@ -26,18 +26,12 @@ export const setFyersAccessToken = (token) => {
 };
 
 // =============================
-// 📈 GET QUOTES (Fixed for Arrays)
+// 📈 GET QUOTES
 // =============================
 export const getQuotes = async (symbols) => {
   try {
-    // 🔥 FIX: Handles both ["NSE:A", "NSE:B"] arrays AND "NSE:A,NSE:B" strings
-    const formattedSymbols = Array.isArray(symbols) ? symbols.join(',') : symbols;
-    
-    const response = await fyers.quotes({
-      symbols: formattedSymbols 
-    });
-
-    // Return just the data array so your strategy code doesn't have to parse it
+    const symbolsArray = Array.isArray(symbols) ? symbols : symbols.split(',');
+    const response = await fyers.getQuotes(symbolsArray);
     return (response && response.s === "ok") ? response.d : null;
   } catch (error) {
     console.error("❌ Fyers Quotes Error:", error.message);
@@ -52,7 +46,7 @@ export const getOptionChain = async (symbol) => {
   try {
     const response = await fyers.optionchain({
       symbol: symbol,
-      strikecount: 10 // V3 usually requires strike count
+      strikecount: 10
     });
     return response;
   } catch (error) {
