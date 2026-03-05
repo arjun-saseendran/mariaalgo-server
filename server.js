@@ -58,13 +58,17 @@ app.use("/api/positions", positionRoutes);
 // 1. Iron Condor Live Positions
 app.get("/api/condor/positions", async (req, res) => {
   try {
+    const ActiveTrade = getActiveTradeModel();
+    const { getCondorTradePerformanceModel } = await import('./models/condorTradePerformanceModel.js');
+    const CondorPerf  = getCondorTradePerformanceModel();
+
     const activeTrade = await ActiveTrade.findOne({ status: "ACTIVE" });
 
     // If no active trade, return last completed trade info for dashboard
     if (!activeTrade) {
       const lastTrade = await ActiveTrade.findOne({ status: "COMPLETED" }).sort({ updatedAt: -1 });
       if (!lastTrade) return res.json([]);
-      const lastPerf = await CondorTradePerformance.findOne({ activeTradeId: lastTrade._id });
+      const lastPerf = await CondorPerf.findOne({ activeTradeId: lastTrade._id });
       return res.json([{
         status:   "COMPLETED",
         index:    lastTrade.index,
@@ -138,7 +142,9 @@ app.get("/api/traffic/status", (req, res) => {
 app.get("/api/history", async (req, res) => {
   try {
     const trafficHistory = await TradePerformance.find().sort({ createdAt: -1 }).limit(10);
-    const condorHistory  = await CondorTradePerformance.find().sort({ createdAt: -1 }).limit(10);
+
+    const { getCondorTradePerformanceModel: getCondorPerfModel } = await import('./models/condorTradePerformanceModel.js');
+    const condorHistory = await getCondorPerfModel().find().sort({ createdAt: -1 }).limit(10);
     const combined = [...trafficHistory, ...condorHistory]
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, 10)

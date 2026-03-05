@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
+import { getCondorDB } from '../config/db.js';
 
-const tradePerformanceSchema = new mongoose.Schema({
+const schema = new mongoose.Schema({
   index: { type: String, required: true },
   activeTradeId: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -15,5 +16,7 @@ const tradePerformanceSchema = new mongoose.Schema({
   notes: { type: String }
 }, { timestamps: true });
 
-export default mongoose.models.CondorTradePerformance || 
-  mongoose.model('CondorTradePerformance', tradePerformanceSchema);
+export const getCondorTradePerformanceModel = () => {
+  const conn = getCondorDB();
+  return conn.models.CondorTradePerformance || conn.model('CondorTradePerformance', schema);
+};

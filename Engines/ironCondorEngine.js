@@ -4,9 +4,13 @@ import { getIO } from '../config/socket.js';
 import { sendCondorAlert } from '../services/telegramService.js';
 import { executeMarketExit, executeMarginSafeEntry } from '../services/IronCodorOrderService.js';
 import { kiteToFyersSymbol, getFyersIndexSymbol } from '../services/fyersSymbolMapper.js';
-import ActiveTrade from '../models/ironCondorActiveTradeModel.js';
-import TradePerformance from '../models/condorTradePerformanceModel.js';
+import { getActiveTradeModel } from '../models/ironCondorActiveTradeModel.js';
+import { getCondorTradePerformanceModel } from '../models/condorTradePerformanceModel.js';
 import dotenv from 'dotenv';
+
+// Lazy getters — models must be accessed after DB is connected
+const ActiveTrade       = () => getActiveTradeModel();
+const TradePerformance  = () => getCondorTradePerformanceModel();
 
 const emitLog = (msg, level = "info") => {
   console.log(msg);
@@ -53,7 +57,7 @@ const extractBaseSymbol = (symbol) => {
 const fetchHistoricalBuffer = async (index, lotSize) => {
     try {
         // Fetch last 20 trades for this index newest first
-        const recentTrades = await TradePerformance.find({ index })
+        const recentTrades = await TradePerformance().find({ index })
             .sort({ createdAt: -1 })
             .limit(20);
 
@@ -110,7 +114,7 @@ const fetchHistoricalBuffer = async (index, lotSize) => {
 // 🛡️ 2. LIVE RISK & DECAY MONITOR
 // ==========================================
 export const monitorCondorLevels = async () => {
-    const activeTrade = await ActiveTrade.findOne({ status: 'ACTIVE' });
+    const activeTrade = await ActiveTrade().findOne({ status: 'ACTIVE' });
     if (!activeTrade) return;
 
     const idx = activeTrade.index;
@@ -337,7 +341,7 @@ export const scanAndSyncOrders = async () => {
     const kc = getKiteInstance();
     try {
         const positions = await kc.getPositions();
-        let activeTrade = await ActiveTrade.findOne({ index, status: 'ACTIVE' });
+        let activeTrade = await ActiveTrade().findOne({ index, status: 'ACTIVE' });
 
         const activeIndexPositions = positions.net.filter(
             p => p.tradingsymbol.startsWith(index) && p.quantity !== 0
@@ -351,7 +355,7 @@ export const scanAndSyncOrders = async () => {
                 .reduce((sum, p) => sum + p.pnl, 0);
 
             try {
-                await TradePerformance.create({
+                await TradePerformance().create({
                     index: index,
                     activeTradeId: activeTrade._id,
                     exitReason: totalPnL >= 0 ? 'PROFIT_TARGET' : 'STOP_LOSS_HIT',
@@ -404,7 +408,7 @@ export const scanAndSyncOrders = async () => {
         //      (e.g. you entered a new spread after an SL hit)
         // Buffer is loaded from MongoDB history so cross-day profits count
         // ================================================================
-        const lastTrade = await ActiveTrade.findOne({ index }).sort({ createdAt: -1 });
+        const lastTrade = await ActiveTrade().findOne({ index }).sort({ createdAt: -1 });
         const shouldCreateNew = !activeTrade && activeIndexPositions.length > 0 &&
             (!lastTrade || lastTrade.status === 'COMPLETED');
 
@@ -426,7 +430,7 @@ export const scanAndSyncOrders = async () => {
 
             emitLog(`📊 Buffer breakdown: Historical=${historicalBuffer.toFixed(2)} + Today=${todayBuffer.toFixed(2)} = Total=${totalBuffer.toFixed(2)}`, "info");
 
-            const newTrade = await ActiveTrade.create({
+            const newTrade = await ActiveTrade().create({
                 index,
                 status: 'ACTIVE',
                 tradeType,

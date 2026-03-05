@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { getCondorDB } from '../config/db.js';
 
 const activeTradeSchema = new mongoose.Schema({
   index: { type: String, required: true },
@@ -34,8 +35,7 @@ const activeTradeSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-// --- THE FIX: PREVENTS OVERWRITEMODELERROR ---
-// This checks if the model is already in Mongoose's internal cache
-const ActiveTrade = mongoose.models.ActiveTrade || mongoose.model('ActiveTrade', activeTradeSchema);
-
-export default ActiveTrade;
+export const getActiveTradeModel = () => {
+  const conn = getCondorDB();
+  return conn.models.ActiveTrade || conn.model('ActiveTrade', activeTradeSchema);
+};
