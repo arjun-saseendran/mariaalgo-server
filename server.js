@@ -7,7 +7,7 @@ import cron from "node-cron";
 import mongoose from "mongoose";
 
 // ─── Config & Routes ──────────────────────────────────────────────────────────
-import { connectDatabases, getCondorDB } from "./config/db.js";
+import { connectDatabases } from "./config/db.js";
 import authRoutes     from "./routes/authRoutes.js";
 import tradeRoutes    from "./routes/ironCondorTradeRoutes.js";
 import optionsRoutes  from "./routes/optionChainRoutes.js";
@@ -59,7 +59,22 @@ app.use("/api/positions", positionRoutes);
 app.get("/api/condor/positions", async (req, res) => {
   try {
     const activeTrade = await ActiveTrade.findOne({ status: "ACTIVE" });
-    if (!activeTrade) return res.json([]);
+
+    // If no active trade, return last completed trade info for dashboard
+    if (!activeTrade) {
+      const lastTrade = await ActiveTrade.findOne({ status: "COMPLETED" }).sort({ updatedAt: -1 });
+      if (!lastTrade) return res.json([]);
+      const lastPerf = await CondorTradePerformance.findOne({ activeTradeId: lastTrade._id });
+      return res.json([{
+        status:   "COMPLETED",
+        index:    lastTrade.index,
+        totalPnL: lastPerf?.realizedPnL?.toFixed(2) || "0.00",
+        exitReason: lastPerf?.exitReason || "COMPLETED",
+        quantity: lastTrade.lotSize,
+        call: { entry: lastTrade.callSpreadEntryPremium?.toFixed(2) || "0.00", current: "0.00", sl: "0.00", firefight: "0.00", profit70: "0.00" },
+        put:  { entry: lastTrade.putSpreadEntryPremium?.toFixed(2)  || "0.00", current: "0.00", sl: "0.00", firefight: "0.00", profit70: "0.00" }
+      }]);
+    }
 
     const idx = activeTrade.index;
     const getLtp = (sym) => sym ? (condorPrices[kiteToFyersSymbol(sym, idx)] || 0) : 0;
@@ -123,12 +138,7 @@ app.get("/api/traffic/status", (req, res) => {
 app.get("/api/history", async (req, res) => {
   try {
     const trafficHistory = await TradePerformance.find().sort({ createdAt: -1 }).limit(10);
-    const condorConn = getCondorDB();
-
-    const CondorPerf = condorConn.models.CondorTradePerformance ||
-      condorConn.model("CondorTradePerformance", new mongoose.Schema({}, { strict: false, collection: 'condortradeperformances' }));
-
-    const condorHistory = await CondorPerf.find().sort({ createdAt: -1 }).limit(10);
+    const condorHistory  = await CondorTradePerformance.find().sort({ createdAt: -1 }).limit(10);
     const combined = [...trafficHistory, ...condorHistory]
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, 10)
