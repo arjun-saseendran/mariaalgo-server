@@ -158,7 +158,7 @@ const start = async () => {
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, async () => {
       console.log(`🚀 Maria Algo Server Online · port ${PORT}`);
-      await sendTelegramAlert("🤖 <b>Maria Algo Online</b>");
+      await sendTelegramAlert("🤖 <b>Maria Algo Online! ✅</b>");
       if (process.env.FYERS_ACCESS_TOKEN) await initFyersLiveData(io);
       setInterval(async () => { try { await scanAndSyncOrders(); } catch (err) {} }, 60000);
     });

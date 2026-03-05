@@ -42,7 +42,7 @@ const sendAlert = async (message, chatId) => {
  * Uses TRAFFIC_TELEGRAM_CHAT_ID → falls back to TELEGRAM_CHAT_ID
  */
 export const sendTrafficAlert = async (message) => {
-    const chatId = process.env.TRAFFIC_TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+    const chatId =  process.env.TELEGRAM_CHAT_ID;
     await sendAlert(message, chatId);
 };
 
@@ -51,7 +51,7 @@ export const sendTrafficAlert = async (message) => {
  * Uses CONDOR_TELEGRAM_CHAT_ID → falls back to TELEGRAM_CHAT_ID
  */
 export const sendCondorAlert = async (message) => {
-    const chatId = process.env.CONDOR_TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+    const chatId =  process.env.TELEGRAM_CHAT_ID;
     await sendAlert(message, chatId);
 };
 
