@@ -138,25 +138,27 @@ app.get("/api/traffic/status", (req, res) => {
   });
 });
 
-// 3. Combined Trade History
+// 3. Combined Trade History — single collection, strategy field differentiates records
 app.get("/api/history", async (req, res) => {
   try {
-    const trafficHistory = await TradePerformance.find().sort({ createdAt: -1 }).limit(10);
+    // Both strategies now share the TradePerformance collection (strategy field set on save)
+    const history = await TradePerformance.find()
+      .sort({ createdAt: -1 })
+      .limit(20);
 
-    const { getCondorTradePerformanceModel: getCondorPerfModel } = await import('./models/condorTradePerformanceModel.js');
-    const condorHistory = await getCondorPerfModel().find().sort({ createdAt: -1 }).limit(10);
-    const combined = [...trafficHistory, ...condorHistory]
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, 10)
-      .map((h) => ({
-        symbol:     h.index || h.symbol,
-        exitReason: h.exitReason,
-        pnl:        h.realizedPnL || h.pnl,
-        strategy:   h.notes?.includes("Iron Condor") || h.callSpreadEntryPremium
-                      ? "IRON_CONDOR" : "TRAFFIC_LIGHT",
-      }));
+    const combined = history.map((h) => ({
+      symbol:     h.index || h.symbol,
+      exitReason: h.exitReason,
+      pnl:        h.realizedPnL ?? h.pnl,
+      strategy:   h.strategy || "TRAFFIC_LIGHT",
+      createdAt:  h.createdAt,
+    }));
+
     res.json(combined);
-  } catch (err) { res.status(500).json({ error: "History sync failed" }); }
+  } catch (err) {
+    console.error("❌ /api/history error:", err.message);
+    res.status(500).json({ error: "History fetch failed" });
+  }
 });
 
 app.get("/status", (req, res) => res.json({ status: "Online", timestamp: new Date() }));

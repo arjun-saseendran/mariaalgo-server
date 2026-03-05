@@ -356,6 +356,7 @@ export const scanAndSyncOrders = async () => {
 
             try {
                 await TradePerformance().create({
+                    strategy: 'IRON_CONDOR',
                     index: index,
                     activeTradeId: activeTrade._id,
                     exitReason: totalPnL >= 0 ? 'PROFIT_TARGET' : 'STOP_LOSS_HIT',

@@ -1,9 +1,9 @@
 import mongoose from "mongoose";
-import { getCondorDB } from "../config/db.js";
 
 const activeTradeSchema = new mongoose.Schema(
     {
         index: { type: String, required: true },
+        strategy: { type: String, default: 'IRON_CONDOR', enum: ['IRON_CONDOR'] },
         status: {
             type: String,
             default: "ACTIVE",
@@ -51,10 +51,10 @@ const activeTradeSchema = new mongoose.Schema(
     { timestamps: true },
 );
 
+// Uses the primary mongoose connection — no secondary DB needed
 const getActiveTradeModel = () => {
-    const conn = getCondorDB();
-    return (
-        conn.models.ActiveTrade || conn.model("ActiveTrade", activeTradeSchema)
-    );
+    return mongoose.models.ActiveTrade ||
+        mongoose.model("ActiveTrade", activeTradeSchema);
 };
+
 export default getActiveTradeModel;

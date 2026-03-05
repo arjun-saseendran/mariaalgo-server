@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
-import { getCondorDB } from '../config/db.js';
 
 const schema = new mongoose.Schema({
+  strategy: { type: String, default: 'IRON_CONDOR', enum: ['TRAFFIC_LIGHT', 'IRON_CONDOR'] },
   index: { type: String, required: true },
   activeTradeId: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -16,7 +16,8 @@ const schema = new mongoose.Schema({
   notes: { type: String }
 }, { timestamps: true });
 
+// Use the same 'tradeperformances' collection — strategy field differentiates records
 export const getCondorTradePerformanceModel = () => {
-  const conn = getCondorDB();
-  return conn.models.CondorTradePerformance || conn.model('CondorTradePerformance', schema);
+  return mongoose.models.TradePerformance ||
+    mongoose.model('TradePerformance', schema);
 };

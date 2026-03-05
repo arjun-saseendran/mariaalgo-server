@@ -181,6 +181,7 @@ async function exitTrade(exitSpotPrice, reason = "Manual Exit") {
       if (reason.includes("Profit") || reason.includes("3:21 PM")) exitCategory = "PROFIT_TARGET";
 
       await TrafficTradePerformance.create({
+          strategy: "TRAFFIC_LIGHT",
           index: "NIFTY",
           exitReason: exitCategory,
           realizedPnL: realizedPnL,
