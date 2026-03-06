@@ -1,9 +1,9 @@
 import { getKiteInstance } from '../config/kiteConfig.js';
-import { getQuotes } from '../config/fyersConfig.js';
+import { getLTP } from '../config/upstoxConfig.js';       // ← Upstox (was Fyers getQuotes)
 import { getIO } from '../config/socket.js';
 import { sendCondorAlert } from '../services/telegramService.js';
 import { executeMarketExit, executeMarginSafeEntry } from '../services/IronCodorOrderService.js';
-import { kiteToFyersSymbol, getFyersIndexSymbol } from '../services/fyersSymbolMapper.js';
+import { kiteToUpstoxSymbol, getUpstoxIndexSymbol } from '../services/upstoxSymbolMapper.js'; // ← Upstox mapper
 import  getActiveTradeModel  from '../models/ironCondorActiveTradeModel.js';
 import { getCondorTradePerformanceModel } from '../models/condorTradePerformanceModel.js';
 import dotenv from 'dotenv';
@@ -118,8 +118,8 @@ export const monitorCondorLevels = async () => {
     if (!activeTrade) return;
 
     const idx = activeTrade.index;
-    const getLtp = (sym) => sym ? condorPrices[kiteToFyersSymbol(sym, idx)] || 0 : 0;
-    const spotLTP = condorPrices[getFyersIndexSymbol(idx)] || 0;
+    const getLtp = (sym) => sym ? condorPrices[kiteToUpstoxSymbol(sym, idx)] || 0 : 0;
+    const spotLTP = condorPrices[getUpstoxIndexSymbol(idx)] || 0;
 
     const currentCallNet = activeTrade.symbols.callSell
         ? Math.abs(getLtp(activeTrade.symbols.callSell) - getLtp(activeTrade.symbols.callBuy))
@@ -252,14 +252,15 @@ export const scanForRoll = async (trade, liveSpotPrice) => {
             const base     = baseSymbolInfoCall.base;
             const sellKite = `${base}${targetShortStrike}${sideToRoll}`;
             const buyKite  = `${base}${targetLongStrike}${sideToRoll}`;
-            const sellFyers = kiteToFyersSymbol(sellKite, trade.index);
-            const buyFyers  = kiteToFyersSymbol(buyKite, trade.index);
+            const sellUpstox = kiteToUpstoxSymbol(sellKite, trade.index);
+            const buyUpstox  = kiteToUpstoxSymbol(buyKite, trade.index);
 
-            const quotes = await getQuotes([sellFyers, buyFyers]);
+            // Use Upstox LTP (returns { 'NSE_FO|...': { last_price: N }, ... })
+            const quotes = await getLTP([sellUpstox, buyUpstox]);
             let netPremium = 0;
             if (quotes) {
-                const sellLTP = quotes.find(q => q.n === sellFyers)?.v?.lp || 0;
-                const buyLTP  = quotes.find(q => q.n === buyFyers)?.v?.lp  || 0;
+                const sellLTP = quotes[sellUpstox]?.last_price || 0;
+                const buyLTP  = quotes[buyUpstox]?.last_price  || 0;
                 netPremium = Math.abs(sellLTP - buyLTP);
             }
 
@@ -290,21 +291,21 @@ export const scanForRoll = async (trade, liveSpotPrice) => {
                 if (sideToRoll === 'PE' && scanShort > oppositeShortStrike) break;
 
                 strikesToScan.push({
-                    sellKite:  `${base}${scanShort}${sideToRoll}`,
-                    buyKite:   `${base}${scanLong}${sideToRoll}`,
-                    sellFyers: kiteToFyersSymbol(`${base}${scanShort}${sideToRoll}`, trade.index),
-                    buyFyers:  kiteToFyersSymbol(`${base}${scanLong}${sideToRoll}`,  trade.index)
+                    sellKite:    `${base}${scanShort}${sideToRoll}`,
+                    buyKite:     `${base}${scanLong}${sideToRoll}`,
+                    sellUpstox:  kiteToUpstoxSymbol(`${base}${scanShort}${sideToRoll}`, trade.index),
+                    buyUpstox:   kiteToUpstoxSymbol(`${base}${scanLong}${sideToRoll}`,  trade.index),
                 });
             }
 
             if (strikesToScan.length > 0) {
-                const allSymbols = strikesToScan.flatMap(s => [s.sellFyers, s.buyFyers]);
-                const quotes = await getQuotes(allSymbols);
+                const allSymbols = strikesToScan.flatMap(s => [s.sellUpstox, s.buyUpstox]);
+                const quotes = await getLTP(allSymbols);
 
                 if (quotes) {
                     for (const pair of strikesToScan) {
-                        const sellLTP    = quotes.find(q => q.n === pair.sellFyers)?.v?.lp || 0;
-                        const buyLTP     = quotes.find(q => q.n === pair.buyFyers)?.v?.lp  || 0;
+                        const sellLTP    = quotes[pair.sellUpstox]?.last_price || 0;
+                        const buyLTP     = quotes[pair.buyUpstox]?.last_price  || 0;
                         const netPremium = Math.abs(sellLTP - buyLTP);
 
                         if (netPremium >= targetPremium && netPremium <= targetPremium + 1.0) {
