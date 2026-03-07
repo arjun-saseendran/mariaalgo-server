@@ -82,18 +82,43 @@ export const getQuotes = async (instrumentKeys) => {
 
 // =============================
 // 💹 GET LTP (Light quote — faster)
+// Uses Upstox v3 /market-quote/ltp REST endpoint directly because
+// the upstox-js-sdk MarketQuoteApi.getLtp() method was removed in newer SDK versions.
 // =============================
 export const getLTP = async (instrumentKeys) => {
   try {
-    const api = getUpstoxMarketApi();
+    const token = process.env.UPSTOX_ACCESS_TOKEN;
+    if (!token) throw new Error('UPSTOX_ACCESS_TOKEN not set');
+
     const keysArray = Array.isArray(instrumentKeys)
       ? instrumentKeys
       : instrumentKeys.split(',');
 
-    const response = await api.getLtp(keysArray, process.env.UPSTOX_API_VERSION || "2.0");
+    // v3 LTP endpoint: GET /v2/market-quote/ltp?instrument_key=KEY1,KEY2,...
+    // (Upstox v2 REST for quotes is still live — only the WS feed moved to v3)
+    const params = new URLSearchParams({ instrument_key: keysArray.join(',') });
+    const res = await fetch(
+      `https://api.upstox.com/v2/market-quote/ltp?${params}`,
+      {
+        method:  'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept':        'application/json',
+          'Api-Version':   '2.0',
+        },
+      }
+    );
 
-    if (response && response.status === "success") {
-      return response.data;
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Upstox LTP HTTP ${res.status}: ${errBody}`);
+    }
+
+    const json = await res.json();
+
+    if (json?.status === 'success') {
+      // Response shape: { status, data: { "NSE_INDEX|Nifty 50": { last_price: ... } } }
+      return json.data;
     }
     return null;
   } catch (error) {

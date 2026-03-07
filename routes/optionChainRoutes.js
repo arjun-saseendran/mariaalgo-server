@@ -8,6 +8,29 @@ import {
 
 const router = express.Router();
 
+// ── Market hours check (IST) ──────────────────────────────────────────────────
+// NSE/BSE: Mon–Fri 09:15–15:30 IST
+const isMarketOpen = () => {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const day  = now.getDay();                          // 0=Sun, 6=Sat
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const open  = 9 * 60 + 15;   // 09:15
+  const close = 15 * 60 + 30;  // 15:30
+  return day >= 1 && day <= 5 && mins >= open && mins < close;
+};
+
+// Build an empty chain skeleton (all zeros) for a given ATM + range
+// Used when market is closed so the UI renders the table without throwing 500
+const buildEmptyChain = (atmStrike, step, strikeRange) => {
+  const chain = [];
+  for (let i = -strikeRange; i <= strikeRange; i++) {
+    const strike = atmStrike + i * step;
+    const empty  = { ltp: 0, chp: 0, oi: '0L', oiRaw: 0, vol: '0K' };
+    chain.push({ strike, isATM: strike === atmStrike, ce: { ...empty }, pe: { ...empty } });
+  }
+  return chain;
+};
+
 router.get('/chain', async (req, res) => {
   const symbol      = (req.query.symbol || 'NIFTY').toUpperCase();
   const strikeRange = parseInt(req.query.strikes || '20');
@@ -27,6 +50,25 @@ router.get('/chain', async (req, res) => {
     const spotQuote = await getLTP([indexKey]);
 
     if (!spotQuote || !spotQuote[indexKey]) {
+      // If market is closed, return a clean empty chain instead of 500
+      const marketOpen = isMarketOpen();
+      if (!marketOpen) {
+        const step      = (symbol === 'SENSEX' || symbol === 'BANKEX') ? 100 : 50;
+        // Use a sensible default ATM for the skeleton (will show all dashes)
+        const defaultAtm = symbol === 'SENSEX' ? 75000 : symbol === 'BANKNIFTY' ? 50000 : 23000;
+        const expiryLabel2 = expiryDate.toLocaleDateString('en-IN', {
+          weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
+          timeZone: 'Asia/Kolkata',
+        });
+        console.log(`⚠️ Option chain: market closed, returning empty skeleton for ${symbol}`);
+        return res.json({
+          spotPrice:    null,
+          atmStrike:    defaultAtm,
+          expiry:       expiryLabel2,
+          marketClosed: true,
+          chain:        buildEmptyChain(defaultAtm, step, strikeRange),
+        });
+      }
       return res.status(500).json({ error: 'Failed to fetch spot price from Upstox' });
     }
 
