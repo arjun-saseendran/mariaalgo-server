@@ -1,5 +1,5 @@
 import express from 'express';
-import { getLTP, getOptionChain } from '../config/upstoxConfig.js';
+import { getLTP, getPCOptionChain, getOptionGreeks } from '../config/upstoxConfig.js';
 import {
   getUpstoxIndexSymbol,
   buildUpstoxOptionSymbol,
@@ -9,18 +9,14 @@ import {
 const router = express.Router();
 
 // ── Market hours check (IST) ──────────────────────────────────────────────────
-// NSE/BSE: Mon–Fri 09:15–15:30 IST
 const isMarketOpen = () => {
-  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-  const day  = now.getDay();                          // 0=Sun, 6=Sat
+  const now  = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const day  = now.getDay();
   const mins = now.getHours() * 60 + now.getMinutes();
-  const open  = 9 * 60 + 15;   // 09:15
-  const close = 15 * 60 + 30;  // 15:30
-  return day >= 1 && day <= 5 && mins >= open && mins < close;
+  return day >= 1 && day <= 5 && mins >= (9 * 60 + 15) && mins < (15 * 60 + 30);
 };
 
-// Build an empty chain skeleton (all zeros) for a given ATM + range
-// Used when market is closed so the UI renders the table without throwing 500
+// ── Empty chain skeleton for closed market ───────────────────────────────────
 const buildEmptyChain = (atmStrike, step, strikeRange) => {
   const chain = [];
   for (let i = -strikeRange; i <= strikeRange; i++) {
@@ -34,176 +30,153 @@ const buildEmptyChain = (atmStrike, step, strikeRange) => {
 router.get('/chain', async (req, res) => {
   const symbol      = (req.query.symbol || 'NIFTY').toUpperCase();
   const strikeRange = parseInt(req.query.strikes || '20');
+  const step        = (symbol === 'SENSEX' || symbol === 'BANKEX') ? 100 : 50;
+  const indexKey    = getUpstoxIndexSymbol(symbol);
 
   try {
-    // ── 1. Expiry date ──────────────────────────────────────────────────────
+    // ── 1. Expiry ───────────────────────────────────────────────────────────
     const expiryDate  = getNextWeeklyExpiry(symbol);
     const expiryLabel = expiryDate.toLocaleDateString('en-IN', {
       weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
       timeZone: 'Asia/Kolkata',
     });
-    // Upstox getOptionChain expects "YYYY-MM-DD"
-    const expiryStr = expiryDate.toISOString().split('T')[0];
+    const expiryStr = expiryDate.toISOString().split('T')[0];  // "YYYY-MM-DD"
 
-    // ── 2. Spot price via Upstox LTP ────────────────────────────────────────
-    const indexKey  = getUpstoxIndexSymbol(symbol);
+    // ── 2. Spot price ───────────────────────────────────────────────────────
     const spotQuote = await getLTP([indexKey]);
 
     if (!spotQuote || !spotQuote[indexKey]) {
-      // If market is closed, return a clean empty chain instead of 500
-      const marketOpen = isMarketOpen();
-      if (!marketOpen) {
-        const step      = (symbol === 'SENSEX' || symbol === 'BANKEX') ? 100 : 50;
-        // Use a sensible default ATM for the skeleton (will show all dashes)
+      if (!isMarketOpen()) {
         const defaultAtm = symbol === 'SENSEX' ? 75000 : symbol === 'BANKNIFTY' ? 50000 : 23000;
-        const expiryLabel2 = expiryDate.toLocaleDateString('en-IN', {
-          weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
-          timeZone: 'Asia/Kolkata',
-        });
-        console.log(`⚠️ Option chain: market closed, returning empty skeleton for ${symbol}`);
+        console.log(`⚠️ Market closed — returning empty skeleton for ${symbol}`);
         return res.json({
-          spotPrice:    null,
-          atmStrike:    defaultAtm,
-          expiry:       expiryLabel2,
-          marketClosed: true,
-          chain:        buildEmptyChain(defaultAtm, step, strikeRange),
+          spotPrice: null, atmStrike: defaultAtm, expiry: expiryLabel,
+          marketClosed: true, chain: buildEmptyChain(defaultAtm, step, strikeRange),
         });
       }
       return res.status(500).json({ error: 'Failed to fetch spot price from Upstox' });
     }
 
     const spotPrice = spotQuote[indexKey].last_price;
-
-    // ── 3. ATM strike ───────────────────────────────────────────────────────
-    const step      = (symbol === 'SENSEX' || symbol === 'BANKEX') ? 100 : 50;
     const atmStrike = Math.round(spotPrice / step) * step;
 
-    // ── 4. Try Upstox Option Chain API first (full chain, best data) ────────
-    //    Returns all strikes for the expiry in one call — no need to batch
-    let chainFromApi = null;
-    try {
-      // Upstox instrumentKey for index: "NSE_INDEX|Nifty 50"
-      chainFromApi = await getOptionChain(indexKey, expiryStr);
-    } catch (apiErr) {
-      console.warn('⚠️ Upstox Option Chain API failed, falling back to LTP batch:', apiErr.message);
-    }
+    // Build strike list
+    const strikes = [];
+    for (let i = -strikeRange; i <= strikeRange; i++) strikes.push(atmStrike + i * step);
 
-    let formattedChain;
+    // ── PATH A: PUT/CALL OPTION CHAIN API ───────────────────────────────────
+    // Best: single call returns full chain with LTP + OI + Volume for all strikes
+    // GET /v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=YYYY-MM-DD
+    let formattedChain = null;
 
-    if (chainFromApi && Array.isArray(chainFromApi) && chainFromApi.length > 0) {
-      // ── PATH A: Full option chain from Upstox API ─────────────────────────
-      // Response shape per element:
-      // { strike_price, call_options: { market_data: { ltp, oi, volume, net_change } },
-      //                 put_options:  { market_data: { ... } } }
+    const pcChain = await getPCOptionChain(indexKey, expiryStr);
 
-      // Filter to our desired strike range and build the chain
+    if (pcChain && Array.isArray(pcChain) && pcChain.length > 0) {
+      console.log(`✅ Option chain via PC chain API: ${pcChain.length} total strikes`);
+
       const chainMap = {};
-      chainFromApi.forEach(row => {
-        const s = row.strike_price;
-        chainMap[s] = row;
-      });
-
-      const strikes = [];
-      for (let i = -strikeRange; i <= strikeRange; i++) {
-        strikes.push(atmStrike + i * step);
-      }
+      pcChain.forEach(row => { chainMap[row.strike_price] = row; });
 
       formattedChain = strikes.map(strike => {
-        const row   = chainMap[strike];
-        const ceRaw = row?.call_options?.market_data || {};
-        const peRaw = row?.put_options?.market_data  || {};
-
-        const ceOiRaw = ceRaw.oi   || 0;
-        const peOiRaw = peRaw.oi   || 0;
-
+        const row    = chainMap[strike];
+        const ceRaw  = row?.call_options?.market_data || {};
+        const peRaw  = row?.put_options?.market_data  || {};
+        const ceOi   = ceRaw.oi   || 0;
+        const peOi   = peRaw.oi   || 0;
         return {
-          strike,
-          isATM: strike === atmStrike,
+          strike, isATM: strike === atmStrike,
           ce: {
             ltp:   ceRaw.ltp        ?? 0,
-            chp:   ceRaw.net_change ?? 0,          // % change
-            oi:    ceOiRaw ? (ceOiRaw / 100000).toFixed(1) + 'L' : '0L',
-            oiRaw: ceOiRaw,                         // raw number for OI bar scaling
+            chp:   ceRaw.net_change ?? 0,
+            oi:    ceOi ? (ceOi / 100000).toFixed(1) + 'L' : '0L',
+            oiRaw: ceOi,
             vol:   ceRaw.volume ? (ceRaw.volume / 1000).toFixed(1) + 'K' : '0K',
           },
           pe: {
             ltp:   peRaw.ltp        ?? 0,
             chp:   peRaw.net_change ?? 0,
-            oi:    peOiRaw ? (peOiRaw / 100000).toFixed(1) + 'L' : '0L',
-            oiRaw: peOiRaw,
+            oi:    peOi ? (peOi / 100000).toFixed(1) + 'L' : '0L',
+            oiRaw: peOi,
             vol:   peRaw.volume ? (peRaw.volume / 1000).toFixed(1) + 'K' : '0K',
           },
         };
       });
+    }
 
-      console.log(`✅ Option chain via Upstox API: ${formattedChain.length} strikes`);
+    // ── PATH B: OPTION GREEKS API (v3) ──────────────────────────────────────
+    // Fallback: batch fetch per instrument key — returns ltp + oi + volume
+    // GET /v3/market-quote/option-greek?instrument_key=KEY1,KEY2,...  (max 50/call)
+    if (!formattedChain) {
+      console.log('📡 PC chain failed — trying option-greek batch...');
 
-    } else {
-      // ── PATH B: Fallback — fetch LTP for each strike via getLTP batch ─────
-      // Same approach as before but using Upstox instrument keys (correct symbols)
-      console.log('📡 Fetching option chain via Upstox LTP batch...');
-
-      const strikes = [];
-      for (let i = -strikeRange; i <= strikeRange; i++) {
-        strikes.push(atmStrike + i * step);
-      }
-
-      // Build Upstox instrument keys for all strikes
       const instruments = [];
       strikes.forEach(strike => {
         instruments.push(buildUpstoxOptionSymbol(symbol, strike, 'CE'));
         instruments.push(buildUpstoxOptionSymbol(symbol, strike, 'PE'));
       });
 
-      console.log('📡 Sample Upstox symbols:', instruments.slice(0, 4));
+      const greeks = await getOptionGreeks(instruments);
 
-      // Upstox getLTP accepts up to 500 keys at once — safe for 40 strikes
-      const quotes = await getLTP(instruments);
-
-      if (!quotes) {
-        return res.status(500).json({ error: 'Failed to fetch option quotes from Upstox' });
+      if (greeks) {
+        console.log(`✅ Option chain via option-greek: ${Object.keys(greeks).length} instruments`);
+        formattedChain = strikes.map(strike => {
+          const ceKey  = buildUpstoxOptionSymbol(symbol, strike, 'CE');
+          const peKey  = buildUpstoxOptionSymbol(symbol, strike, 'PE');
+          const ceData = greeks[ceKey] || {};
+          const peData = greeks[peKey] || {};
+          const ceOi   = ceData.oi || 0;
+          const peOi   = peData.oi || 0;
+          return {
+            strike, isATM: strike === atmStrike,
+            ce: {
+              ltp:   ceData.last_price ?? 0,
+              chp:   ceData.cp ? ((ceData.last_price - ceData.cp) / ceData.cp * 100) : 0,
+              oi:    ceOi ? (ceOi / 100000).toFixed(1) + 'L' : '0L',
+              oiRaw: ceOi,
+              vol:   ceData.volume ? (ceData.volume / 1000).toFixed(1) + 'K' : '0K',
+            },
+            pe: {
+              ltp:   peData.last_price ?? 0,
+              chp:   peData.cp ? ((peData.last_price - peData.cp) / peData.cp * 100) : 0,
+              oi:    peOi ? (peOi / 100000).toFixed(1) + 'L' : '0L',
+              oiRaw: peOi,
+              vol:   peData.volume ? (peData.volume / 1000).toFixed(1) + 'K' : '0K',
+            },
+          };
+        });
       }
-
-      // getLTP response: { 'NSE_FO|NIFTY10MAR202522500CE': { last_price: 223.9, ... }, ... }
-      formattedChain = strikes.map(strike => {
-        const ceKey = buildUpstoxOptionSymbol(symbol, strike, 'CE');
-        const peKey = buildUpstoxOptionSymbol(symbol, strike, 'PE');
-
-        const ceData = quotes[ceKey] || {};
-        const peData = quotes[peKey] || {};
-
-        const ceOiRaw = ceData.oi || 0;
-        const peOiRaw = peData.oi || 0;
-
-        return {
-          strike,
-          isATM: strike === atmStrike,
-          ce: {
-            ltp:   ceData.last_price ?? 0,
-            chp:   ceData.net_change ?? 0,
-            oi:    ceOiRaw ? (ceOiRaw / 100000).toFixed(1) + 'L' : '0L',
-            oiRaw: ceOiRaw,
-            vol:   ceData.volume ? (ceData.volume / 1000).toFixed(1) + 'K' : '0K',
-          },
-          pe: {
-            ltp:   peData.last_price ?? 0,
-            chp:   peData.net_change ?? 0,
-            oi:    peOiRaw ? (peOiRaw / 100000).toFixed(1) + 'L' : '0L',
-            oiRaw: peOiRaw,
-            vol:   peData.volume ? (peData.volume / 1000).toFixed(1) + 'K' : '0K',
-          },
-        };
-      });
-
-      console.log(`✅ Option chain via Upstox LTP batch: ${formattedChain.length} strikes`);
     }
 
-    res.json({
-      spotPrice,
-      atmStrike,
-      expiry: expiryLabel,
-      chain:  formattedChain,
-    });
+    // ── PATH C: LTP ONLY (last resort — no OI/volume) ───────────────────────
+    if (!formattedChain) {
+      console.log('📡 option-greek failed — falling back to LTP only (no OI)...');
+
+      const instruments = [];
+      strikes.forEach(strike => {
+        instruments.push(buildUpstoxOptionSymbol(symbol, strike, 'CE'));
+        instruments.push(buildUpstoxOptionSymbol(symbol, strike, 'PE'));
+      });
+
+      const quotes = await getLTP(instruments);
+      if (!quotes) {
+        return res.status(500).json({ error: 'All Upstox market data endpoints failed' });
+      }
+
+      console.log(`✅ Option chain via LTP only: ${Object.keys(quotes).length} instruments`);
+      formattedChain = strikes.map(strike => {
+        const ceKey  = buildUpstoxOptionSymbol(symbol, strike, 'CE');
+        const peKey  = buildUpstoxOptionSymbol(symbol, strike, 'PE');
+        const ceData = quotes[ceKey] || {};
+        const peData = quotes[peKey] || {};
+        return {
+          strike, isATM: strike === atmStrike,
+          ce: { ltp: ceData.last_price ?? 0, chp: 0, oi: '—', oiRaw: 0, vol: '—' },
+          pe: { ltp: peData.last_price ?? 0, chp: 0, oi: '—', oiRaw: 0, vol: '—' },
+        };
+      });
+    }
+
+    res.json({ spotPrice, atmStrike, expiry: expiryLabel, chain: formattedChain });
 
   } catch (error) {
     console.error('❌ Option Chain Error:', error.message);

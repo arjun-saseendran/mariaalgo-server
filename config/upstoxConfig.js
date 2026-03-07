@@ -128,12 +128,106 @@ export const getLTP = async (instrumentKeys) => {
 };
 
 // =============================
-// 📊 GET OPTION CHAIN
+// 📊 GET PUT/CALL OPTION CHAIN
+// Best endpoint — returns full chain (all strikes) with LTP + OI + Volume in one call.
+// GET /v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=2026-03-10
+// =============================
+export const getPCOptionChain = async (instrumentKey, expiryDate) => {
+  try {
+    const token = process.env.UPSTOX_ACCESS_TOKEN;
+    if (!token) throw new Error('UPSTOX_ACCESS_TOKEN not set');
+
+    const params = new URLSearchParams({
+      instrument_key: instrumentKey,
+      expiry_date:    expiryDate,   // "YYYY-MM-DD"
+    });
+
+    const res = await fetch(
+      `https://api.upstox.com/v2/option/chain?${params}`,
+      {
+        method:  'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept':        'application/json',
+          'Api-Version':   '2.0',
+        },
+      }
+    );
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Upstox PC Option Chain HTTP ${res.status}: ${errBody}`);
+    }
+
+    const json = await res.json();
+    if (json?.status === 'success') return json.data;   // array of strikes
+    return null;
+  } catch (error) {
+    console.error('❌ Upstox PC Option Chain Error:', error.message);
+    return null;
+  }
+};
+
+// =============================
+// 📊 GET OPTION GREEKS (v3)
+// Fallback when PC chain fails. Returns ltp + oi + volume per instrument key.
+// GET /v3/market-quote/option-greek?instrument_key=NSE_FO|xxx,NSE_FO|yyy
+// Max 50 keys per request — batch if needed.
+// =============================
+export const getOptionGreeks = async (instrumentKeys) => {
+  try {
+    const token = process.env.UPSTOX_ACCESS_TOKEN;
+    if (!token) throw new Error('UPSTOX_ACCESS_TOKEN not set');
+
+    const keysArray = Array.isArray(instrumentKeys)
+      ? instrumentKeys
+      : instrumentKeys.split(',');
+
+    // Batch into groups of 50
+    const results = {};
+    for (let i = 0; i < keysArray.length; i += 50) {
+      const batch  = keysArray.slice(i, i + 50);
+      const params = new URLSearchParams({ instrument_key: batch.join(',') });
+
+      const res = await fetch(
+        `https://api.upstox.com/v3/market-quote/option-greek?${params}`,
+        {
+          method:  'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept':        'application/json',
+            'Api-Version':   '2.0',
+          },
+        }
+      );
+
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`Upstox Option Greeks HTTP ${res.status}: ${errBody}`);
+      }
+
+      const json = await res.json();
+      if (json?.status === 'success' && json.data) {
+        // Keys in response use colon format: "NSE_FO:NIFTY..."  — normalise to pipe
+        for (const [k, v] of Object.entries(json.data)) {
+          results[k.replace(':', '|')] = v;
+        }
+      }
+    }
+
+    return Object.keys(results).length > 0 ? results : null;
+  } catch (error) {
+    console.error('❌ Upstox Option Greeks Error:', error.message);
+    return null;
+  }
+};
+
+// =============================
+// 📊 GET OPTION CHAIN (SDK — legacy, kept for compatibility)
 // =============================
 export const getOptionChain = async (instrumentKey, expiryDate) => {
   try {
     const api = new OptionsApi();
-    // expiryDate format: "2026-03-06"
     const response = await api.getOptionContracts(instrumentKey, expiryDate);
     if (response && response.status === "success") {
       return response.data;
