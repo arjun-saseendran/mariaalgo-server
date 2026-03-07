@@ -128,9 +128,55 @@ export const getLTP = async (instrumentKeys) => {
 };
 
 // =============================
-// 📊 GET PUT/CALL OPTION CHAIN
-// Best endpoint — returns full chain (all strikes) with LTP + OI + Volume in one call.
-// GET /v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=2026-03-10
+// 📅 GET LAST CLOSE PRICE (works after market close)
+// Uses historical candle daily endpoint — returns yesterday's close for the index.
+// GET /v2/historical-candle/{key}/day/{toDate}/{fromDate}
+// =============================
+export const getLastClose = async (instrumentKey) => {
+  try {
+    const token = process.env.UPSTOX_ACCESS_TOKEN;
+    if (!token) throw new Error('UPSTOX_ACCESS_TOKEN not set');
+
+    // Use last 5 days window to handle weekends/holidays
+    const to   = new Date(); to.setDate(to.getDate() + 1);
+    const from = new Date(); from.setDate(from.getDate() - 5);
+    const fmt  = d => d.toISOString().split('T')[0];
+
+    // Encode the pipe in the instrument key for URL safety
+    const encodedKey = instrumentKey.replace('|', '%7C');
+    const url = `https://api.upstox.com/v2/historical-candle/${encodedKey}/day/${fmt(to)}/${fmt(from)}`;
+
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept':        'application/json',
+        'Api-Version':   '2.0',
+      },
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Upstox Historical HTTP ${res.status}: ${errBody}`);
+    }
+
+    const json = await res.json();
+    // Candle format: [timestamp, open, high, low, close, volume, oi]
+    // First candle is most recent
+    const candles = json?.data?.candles;
+    if (candles && candles.length > 0) {
+      return candles[0][4]; // close price
+    }
+    return null;
+  } catch (error) {
+    console.error('❌ Upstox Last Close Error:', error.message);
+    return null;
+  }
+};
+
+// =============================
+// 📊 GET PUT/CALL OPTION CHAIN  ← works live AND after market close (returns last session data)
+// Single call — returns full chain with LTP + OI + Volume for all strikes.
+// GET /v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=YYYY-MM-DD
 // =============================
 export const getPCOptionChain = async (instrumentKey, expiryDate) => {
   try {
@@ -139,13 +185,12 @@ export const getPCOptionChain = async (instrumentKey, expiryDate) => {
 
     const params = new URLSearchParams({
       instrument_key: instrumentKey,
-      expiry_date:    expiryDate,   // "YYYY-MM-DD"
+      expiry_date:    expiryDate,
     });
 
     const res = await fetch(
       `https://api.upstox.com/v2/option/chain?${params}`,
       {
-        method:  'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept':        'application/json',
@@ -160,7 +205,7 @@ export const getPCOptionChain = async (instrumentKey, expiryDate) => {
     }
 
     const json = await res.json();
-    if (json?.status === 'success') return json.data;   // array of strikes
+    if (json?.status === 'success') return json.data;
     return null;
   } catch (error) {
     console.error('❌ Upstox PC Option Chain Error:', error.message);
@@ -169,22 +214,17 @@ export const getPCOptionChain = async (instrumentKey, expiryDate) => {
 };
 
 // =============================
-// 📊 GET OPTION GREEKS (v3)
-// Fallback when PC chain fails. Returns ltp + oi + volume per instrument key.
-// GET /v3/market-quote/option-greek?instrument_key=NSE_FO|xxx,NSE_FO|yyy
-// Max 50 keys per request — batch if needed.
+// 📊 GET OPTION GREEKS (v3) — fallback with OI + volume per instrument key
+// GET /v3/market-quote/option-greek?instrument_key=KEY1,KEY2,...  (max 50/call)
 // =============================
 export const getOptionGreeks = async (instrumentKeys) => {
   try {
     const token = process.env.UPSTOX_ACCESS_TOKEN;
     if (!token) throw new Error('UPSTOX_ACCESS_TOKEN not set');
 
-    const keysArray = Array.isArray(instrumentKeys)
-      ? instrumentKeys
-      : instrumentKeys.split(',');
+    const keysArray = Array.isArray(instrumentKeys) ? instrumentKeys : instrumentKeys.split(',');
+    const results   = {};
 
-    // Batch into groups of 50
-    const results = {};
     for (let i = 0; i < keysArray.length; i += 50) {
       const batch  = keysArray.slice(i, i + 50);
       const params = new URLSearchParams({ instrument_key: batch.join(',') });
@@ -192,7 +232,6 @@ export const getOptionGreeks = async (instrumentKeys) => {
       const res = await fetch(
         `https://api.upstox.com/v3/market-quote/option-greek?${params}`,
         {
-          method:  'GET',
           headers: {
             'Authorization': `Bearer ${token}`,
             'Accept':        'application/json',
@@ -201,14 +240,10 @@ export const getOptionGreeks = async (instrumentKeys) => {
         }
       );
 
-      if (!res.ok) {
-        const errBody = await res.text();
-        throw new Error(`Upstox Option Greeks HTTP ${res.status}: ${errBody}`);
-      }
+      if (!res.ok) continue; // skip failed batches, don't abort everything
 
       const json = await res.json();
       if (json?.status === 'success' && json.data) {
-        // Keys in response use colon format: "NSE_FO:NIFTY..."  — normalise to pipe
         for (const [k, v] of Object.entries(json.data)) {
           results[k.replace(':', '|')] = v;
         }
@@ -223,18 +258,16 @@ export const getOptionGreeks = async (instrumentKeys) => {
 };
 
 // =============================
-// 📊 GET OPTION CHAIN (SDK — legacy, kept for compatibility)
+// 📊 GET OPTION CHAIN (SDK legacy — kept for reference)
 // =============================
 export const getOptionChain = async (instrumentKey, expiryDate) => {
   try {
     const api = new OptionsApi();
     const response = await api.getOptionContracts(instrumentKey, expiryDate);
-    if (response && response.status === "success") {
-      return response.data;
-    }
+    if (response && response.status === 'success') return response.data;
     return null;
   } catch (error) {
-    console.error("❌ Upstox Option Chain Error:", error.message);
+    console.error('❌ Upstox Option Chain Error:', error.message);
     return null;
   }
 };
